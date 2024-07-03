@@ -13,7 +13,7 @@ def get_model_params_num(model):
 def main():
     dev = 'cpu'
     if torch.cuda.is_available():
-      dev = 'cuda'
+        dev = 'cuda'
     dev = 'cpu'
     debug('device:', dev)
     device = torch.device(dev)
