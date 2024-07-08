@@ -1,5 +1,6 @@
 import cdsapi   # put url and key in ~/.cdsapirc
 import os
+import pandas as pd
 
 from era5_data.config import cfg
 
@@ -84,15 +85,23 @@ def main():
 
     time = [f"{i:02}:00" for i in range(24)]
 
-    timeinfo = {
-        'year': '2007',
-        'month': '01',
-        'day': '01',
-        'time': time,
-    }
+    beg_date = '20070102'
+    end_date = '20070103'
+    date_range = pd.date_range(start=beg_date, end=end_date, freq='1D', inclusive='left')
+    for date in date_range:
+        year = date.strftime('%Y')
+        month = date.strftime('%m')
+        day = date.strftime('%d')
+        print(year, month, day)
+        timeinfo = {
+            'year': year,
+            'month': month,
+            'day': day,
+            'time': time,
+        }
 
-    download_upperair_data(client, timeinfo)
-    download_surface_data(client, timeinfo)
+        download_upperair_data(client, timeinfo)
+        download_surface_data(client, timeinfo)
 
 
 if __name__ == "__main__":

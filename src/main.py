@@ -1,7 +1,6 @@
+import time
 from torch import nn
 import torch
-from collections import OrderedDict
-import torch.utils.checkpoint as checkpoint
 
 from model.layers import *
 from model.pangu_model import PanguModel
@@ -15,8 +14,8 @@ def main():
     if torch.cuda.is_available():
         dev = 'cuda'
     dev = 'cpu'
-    debug('device:', dev)
     device = torch.device(dev)
+    debug('device:', device)
 
     model = PanguModel(device=device).to(device)
 
@@ -29,7 +28,10 @@ def main():
     debug('x_upper:', x_upper.shape)
     debug('x_surface:', x_surface.shape)
 
+    beg_time = time.time()
     output, output_surface = model(x_upper, x_surface)
+    end_time = time.time()
+    print(f"Time: {end_time - beg_time:.2f}s")
     # print(output)
     debug('out_upper', output.shape)
     debug('out_surface', output_surface.shape)

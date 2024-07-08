@@ -6,6 +6,10 @@ import pandas as pd
 import xarray as xr
 from torch.utils.data import Dataset
 
+from era5_data.utils_data import load_data_stats, compute_norm_data
+from util import debug, CacheDict
+
+
 class Era5Dataset(Dataset):
     r""" ERA5 dataset (NetCDF format) wrapper for PyTorch DataLoader.
     Args:
@@ -63,12 +67,23 @@ class Era5Dataset(Dataset):
         self.data_keys = self.data_keys[:final_i]
         self.gt_data_keys = self.gt_data_keys[:final_i]
 
+        if self.normalize_data_path:
+            self.statistic_data = load_data_stats(self.normalize_data_path)
+
+        # TODO: temporary set cache_len to 2
+        self.data_cache = CacheDict(cache_len=2)
+        self.data_hit = 0
+        self.data_miss = 0
+
     def __len__(self):
         return len(self.data_keys)
 
     def __getitem__(self, index):
-        # TODO
-        pass
+        input_upper, input_surface, target_upper, target_surface = self._load_data(index)
+        if self.normalize:
+            input_upper, input_surface = compute_norm_data(input_upper, input_surface, self.statistic_data)
+            target_upper, target_surface = compute_norm_data(target_upper, target_surface, self.statistic_data)
+        return input_upper, input_surface, target_upper, target_surface
 
     def __repr__(self):
         return self.__class__.__name__
@@ -80,71 +95,53 @@ class Era5Dataset(Dataset):
         # foramat to YYYYMMDD
         ts_str = ts.strftime('%Y%m%d')
         gt_ts_str = gt_ts.strftime('%Y%m%d')
-        # TODO
 
+        # load data
+        input_upper_dataset, input_surface_dataset = self._load_dataset(ts_str)
+        target_upper_dataset, target_surface_dataset = self._load_dataset(gt_ts_str)
 
+        input_upper_data = input_upper_dataset.sel(time=ts)
+        input_surface_data = input_surface_dataset.sel(time=ts)
+        assert input_upper_data['time'] == input_surface_data['time']
 
-    def LoadData(self, key):
+        target_upper_data = target_upper_dataset.sel(time=gt_ts)
+        target_surface_data = target_surface_dataset.sel(time=gt_ts)
+        assert target_upper_data['time'] == target_surface_data['time']
+
+        input_upper, input_surface = era5_nctonumpy(input_upper_data, input_surface_data)
+        target_upper, target_surface = era5_nctonumpy(target_upper_data, target_surface_data)
+        return input_upper, input_surface, target_upper, target_surface
+
+    def _load_dataset(self, timestamp: str) -> Tuple[xr.Dataset, xr.Dataset]:
+        if timestamp not in self.data_cache.keys():
+            # debug(f'Timestamp {timestamp} cache miss')
+            # self.data_miss += 1
+            self._load_dataset_to_cache(timestamp)
+        else:
+            pass
+            # self.data_hit += 1
+            # debug(f'Timestamp {timestamp} cache hit')
+        dataset = self.data_cache[timestamp]
+        upper_dataset = dataset['upper']
+        surface_dataset = dataset['surface']
+
+        return upper_dataset, surface_dataset
+
+    def _load_dataset_to_cache(self, timestamp: str):
         """
-        Input
-            key: datetime object, input time
-        Return
-            input: numpy
-            input_surface: numpy
-            target: numpy label
-            target_surface: numpy label
-            (start_time_str, end_time_str): string, datetime(target time - input time) = horizon
+        Args:
+            timestamp (str): Timestamp in the format 'YYYYMMDD'.
         """
-        # start_time datetime obj
-        start_time = key
-        # convert datetime obj to string for matching file name and return key
-        start_time_str = datetime.strftime(key, '%Y%m%d%H')
+        upper_path = os.path.join(self.data_path, 'upper', f'{timestamp}.nc')
+        surface_path = os.path.join(self.data_path, 'surface', f'{timestamp}.nc')
 
-        # target time = start time + horizon
-        end_time = key + timedelta(hours=self.horizon)
-        end_time_str = end_time.strftime('%Y%m%d%H')
-
-        # Prepare the input_surface dataset
-        # print(start_time_str[0:6])
-        input_surface_dataset = xr.open_dataset(
-            os.path.join(self.nc_path, 'surface', 'surface_{}.nc'.format(start_time_str[0:6])))  # 201501
-        if 'expver' in input_surface_dataset.keys():
-            input_surface_dataset = input_surface_dataset.sel(time=start_time, expver=5)
-        else:
-            input_surface_dataset = input_surface_dataset.sel(time=start_time)
-
-        # Prepare the input_upper dataset
-        input_upper_dataset = xr.open_dataset(
-            os.path.join(self.nc_path, 'upper', 'upper_{}.nc'.format(start_time_str[0:8])))
-        if 'expver' in input_upper_dataset.keys():
-            input_upper_dataset = input_upper_dataset.sel(time=start_time, expver=5)
-        else:
-            input_upper_dataset = input_upper_dataset.sel(time=start_time)
-        # make sure upper and surface variables are at the same time
-        assert input_surface_dataset['time'] == input_upper_dataset['time']
-        # input dataset to input numpy
-        input, input_surface = self.nctonumpy(input_upper_dataset, input_surface_dataset)
-
-        # Prepare the target_surface dataset
-        target_surface_dataset = xr.open_dataset(
-            os.path.join(self.nc_path, 'surface', 'surface_{}.nc'.format(end_time_str[0:6])))  # 201501
-        if 'expver' in input_surface_dataset.keys():
-            target_surface_dataset = target_surface_dataset.sel(time=end_time, expver=5)
-        else:
-            target_surface_dataset = target_surface_dataset.sel(time=end_time)
-        # Prepare the target upper dataset
-        target_upper_dataset = xr.open_dataset(
-            os.path.join(self.nc_path, 'upper', 'upper_{}.nc'.format(end_time_str[0:8])))
-        if 'expver' in target_upper_dataset.keys():
-            target_upper_dataset = target_upper_dataset.sel(time=end_time, expver=5)
-        else:
-            target_upper_dataset = target_upper_dataset.sel(time=end_time)
-        # make sure the target upper and surface variables are at the same time
-        assert target_upper_dataset['time'] == target_surface_dataset['time']
-        # target dataset to target numpy
-        target, target_surface = self.nctonumpy(target_upper_dataset, target_surface_dataset)
-
-        return input, input_surface, target, target_surface, (start_time_str, end_time_str)
+        upper_dataset = xr.open_dataset(upper_path)
+        surface_dataset = xr.open_dataset(surface_path)
+        dataset  = {
+            'upper': upper_dataset,
+            'surface': surface_dataset
+        }
+        self.data_cache[timestamp] = dataset
 
 
 def era5_nctonumpy(dataset_upper: xr.Dataset, dataset_surface: xr.Dataset) -> Tuple[np.ndarray, np.ndarray]:
@@ -153,8 +150,9 @@ def era5_nctonumpy(dataset_upper: xr.Dataset, dataset_surface: xr.Dataset) -> Tu
     upper_t = dataset_upper['t'].values.astype(np.float32)
     upper_u = dataset_upper['u'].values.astype(np.float32)
     upper_v = dataset_upper['v'].values.astype(np.float32)
-    upper = np.concatenate((upper_z[np.newaxis, ...], upper_q[np.newaxis, ...], upper_t[np.newaxis, ...],
-                            upper_u[np.newaxis, ...], upper_v[np.newaxis, ...]), axis=0)
+    # upper = np.concatenate((upper_z[np.newaxis, ...], upper_q[np.newaxis, ...], upper_t[np.newaxis, ...],
+    #                         upper_u[np.newaxis, ...], upper_v[np.newaxis, ...]), axis=0)
+    upper = np.stack((upper_z, upper_q, upper_t, upper_u, upper_v), axis=0)
     assert upper.shape == (5, 13, 721, 1440)
     # levels in descending order, require new memery space
     upper = upper[:, ::-1, :, :].copy()
@@ -163,8 +161,9 @@ def era5_nctonumpy(dataset_upper: xr.Dataset, dataset_surface: xr.Dataset) -> Tu
     surface_u10 = dataset_surface['u10'].values.astype(np.float32)
     surface_v10 = dataset_surface['v10'].values.astype(np.float32)
     surface_t2m = dataset_surface['t2m'].values.astype(np.float32)
-    surface = np.concatenate((surface_mslp[np.newaxis, ...], surface_u10[np.newaxis, ...],
-                                surface_v10[np.newaxis, ...], surface_t2m[np.newaxis, ...]), axis=0)
+    # surface = np.concatenate((surface_mslp[np.newaxis, ...], surface_u10[np.newaxis, ...],
+    #                             surface_v10[np.newaxis, ...], surface_t2m[np.newaxis, ...]), axis=0)
+    surface = np.stack((surface_mslp, surface_u10, surface_v10, surface_t2m), axis=0)
     assert surface.shape == (4, 721, 1440)
 
     return upper, surface
