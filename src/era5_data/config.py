@@ -7,14 +7,10 @@ import torch
 __C = edict()
 cfg = __C
 __C.GLOBAL = edict()
-__C.GLOBAL.DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-__C.GLOBAL.BATCH_SZIE = 1
 
 # TODO: Change the path to the root of the project
 __C.GLOBAL.PATH = "/Users/wu/Documents/Code/python/pangu_weather/pangu-weather-ddp"
 assert os.path.exists(__C.GLOBAL.PATH)
-__C.GLOBAL.SEED = 99
-__C.GLOBAL.NUM_STREADS = 16
 
 __C.PG_CONST_MASK_PATH = os.path.join(__C.GLOBAL.PATH, 'constant_masks')
 

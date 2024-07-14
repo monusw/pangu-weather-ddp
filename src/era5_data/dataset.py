@@ -31,6 +31,9 @@ class Era5Dataset(Dataset):
             keys: 'upper_mean', 'upper_std',    (5, 13, 721, 1440)
                   'surface_mean', 'surface_std' (4, 721, 1440)
             If None, we do not normalize the data. Default is None.
+        cache_len (int): Number of datasets to cache in memory. Default is 0.
+            OS will do page cache, so cache of datsets is only useful for large datasets
+            (reduce xarray parsing time).
 
     Note: `begin_date` is inclusive, `end_date` is exclusive. For example, if begin_date='20070101'
         and end_date='20070102', freq='1h', the original dataset will contain data
@@ -44,16 +47,24 @@ class Era5Dataset(Dataset):
                  freq='1h',
                  lead_time=1,
                  normalize_data_path=None,
+                 cache_len=0,
                  ):
         self.data_path = data_path
-        self.normalize = (normalize_data_path is not None)
-        self.normalize_data_path = normalize_data_path
 
-        self.data_keys = list(pd.date_range(start=begin_date, end=end_date, freq=freq, inclusive='left'))
+        try:
+            self.data_keys = list(pd.date_range(start=begin_date, end=end_date, freq=freq, inclusive='left'))
+        except:
+            # compatible with pandas 1.x
+            self.data_keys = list(pd.date_range(start=begin_date, end=end_date, freq=freq, closed='left'))
+
         # ground truth data keys
         gt_begin_date = pd.to_datetime(begin_date) + pd.DateOffset(hours=lead_time)
         gt_end_date = pd.to_datetime(end_date) + pd.DateOffset(hours=lead_time)
-        self.gt_data_keys = list(pd.date_range(start=gt_begin_date, end=gt_end_date, freq=freq, inclusive='left'))
+        try:
+            self.gt_data_keys = list(pd.date_range(start=gt_begin_date, end=gt_end_date, freq=freq, inclusive='left'))
+        except:
+            # compatible with pandas 1.x
+            self.gt_data_keys = list(pd.date_range(start=gt_begin_date, end=gt_end_date, freq=freq, closed='left'))
 
         assert len(self.data_keys) == len(self.gt_data_keys)
 
@@ -67,13 +78,19 @@ class Era5Dataset(Dataset):
         self.data_keys = self.data_keys[:final_i]
         self.gt_data_keys = self.gt_data_keys[:final_i]
 
+        # normalization
+        self.normalize = (normalize_data_path is not None)
+        self.normalize_data_path = normalize_data_path
         if self.normalize_data_path:
             self.statistic_data = load_data_stats(self.normalize_data_path)
 
-        # TODO: temporary set cache_len to 2
-        self.data_cache = CacheDict(cache_len=2)
-        self.data_hit = 0
-        self.data_miss = 0
+        # cache
+        assert cache_len >= 0
+        self.cache_len = cache_len
+        if self.cache_len > 0:
+            self.data_cache = CacheDict(cache_len=2)
+        self.cache_hit = 0
+        self.cache_miss = 0
 
     def __len__(self):
         return len(self.data_keys)
@@ -97,8 +114,8 @@ class Era5Dataset(Dataset):
         gt_ts_str = gt_ts.strftime('%Y%m%d')
 
         # load data
-        input_upper_dataset, input_surface_dataset = self._load_dataset(ts_str)
-        target_upper_dataset, target_surface_dataset = self._load_dataset(gt_ts_str)
+        input_upper_dataset, input_surface_dataset = self._get_dataset(ts_str)
+        target_upper_dataset, target_surface_dataset = self._get_dataset(gt_ts_str)
 
         input_upper_data = input_upper_dataset.sel(time=ts)
         input_surface_data = input_surface_dataset.sel(time=ts)
@@ -112,14 +129,17 @@ class Era5Dataset(Dataset):
         target_upper, target_surface = era5_nctonumpy(target_upper_data, target_surface_data)
         return input_upper, input_surface, target_upper, target_surface
 
-    def _load_dataset(self, timestamp: str) -> Tuple[xr.Dataset, xr.Dataset]:
+    def _get_dataset(self, timestamp: str) -> Tuple[xr.Dataset, xr.Dataset]:
+        if self.cache_len == 0:
+            return self._load_dataset(timestamp)
+
+        # use cache
         if timestamp not in self.data_cache.keys():
             # debug(f'Timestamp {timestamp} cache miss')
-            # self.data_miss += 1
+            self.cache_miss += 1
             self._load_dataset_to_cache(timestamp)
         else:
-            pass
-            # self.data_hit += 1
+            self.cache_hit += 1
             # debug(f'Timestamp {timestamp} cache hit')
         dataset = self.data_cache[timestamp]
         upper_dataset = dataset['upper']
@@ -127,16 +147,16 @@ class Era5Dataset(Dataset):
 
         return upper_dataset, surface_dataset
 
-    def _load_dataset_to_cache(self, timestamp: str):
-        """
-        Args:
-            timestamp (str): Timestamp in the format 'YYYYMMDD'.
-        """
+    def _load_dataset(self, timestamp: str) -> Tuple[xr.Dataset, xr.Dataset]:
         upper_path = os.path.join(self.data_path, 'upper', f'{timestamp}.nc')
         surface_path = os.path.join(self.data_path, 'surface', f'{timestamp}.nc')
 
         upper_dataset = xr.open_dataset(upper_path)
         surface_dataset = xr.open_dataset(surface_path)
+        return upper_dataset, surface_dataset
+
+    def _load_dataset_to_cache(self, timestamp: str):
+        upper_dataset, surface_dataset = self._load_dataset(timestamp)
         dataset  = {
             'upper': upper_dataset,
             'surface': surface_dataset

@@ -34,4 +34,5 @@ xarray
 timm
 pandas
 cdsapi  # For download ERA5 dataset
+psutil  # For memory monitoring
 ```

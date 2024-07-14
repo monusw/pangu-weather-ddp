@@ -146,7 +146,7 @@ class PatchEmbedding_pretrain(nn.Module):
 
 
 class EarthSpecificLayer(nn.Module):
-    def __init__(self, depth, dim, drop_path_ratio_list, heads, use_checkpoint, device):
+    def __init__(self, depth, dim, drop_path_ratio_list, heads, device):
         super(EarthSpecificLayer, self).__init__()
         self.device = device
         '''Basic layer of our network, contains 2 or 6 blocks'''
@@ -156,22 +156,15 @@ class EarthSpecificLayer(nn.Module):
         for i_layer in range(depth):
             block_list['EarthSpecificBlock{}'.format(i_layer)] = EarthSpecificBlock(dim, drop_path_ratio_list[i_layer], heads, device=self.device)
         self.blocks = nn.Sequential(block_list)
-        self.use_checkpoint = use_checkpoint
         self.device = device
 
     def forward(self, x, Z, H, W):
             # # Roll the input every two blocks
         for i, blk in enumerate(self.blocks):
-            if self.use_checkpoint:
-                if i % 2 == 0:
-                    x = checkpoint.checkpoint(blk, x, Z, H, W, False, use_reentrant=False)
-                else:
-                    x = checkpoint.checkpoint(blk, x, Z, H, W, True, use_reentrant=False)
+            if i % 2 == 0:
+                x = blk(x, Z, H, W, roll=False)
             else:
-                if i % 2 == 0:
-                    x = blk(x, Z, H, W, roll=False)
-                else:
-                    x = blk(x, Z, H, W, roll=True)
+                x = blk(x, Z, H, W, roll=True)
         return x
 
 class EarthSpecificBlock(nn.Module):
@@ -571,11 +564,11 @@ class PatchRecovery(nn.Module):
         return output, output_surface
 
 class PatchRecovery_pretrain(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, patch_size, dim):
         super().__init__()
         '''Patch recovery operation'''
         # Hear we use two transposed convolutions to recover data
-        self.patch_size = (2, 4, 4)
+        self.patch_size = patch_size
         self.dim = dim
         self.conv = nn.Conv1d(in_channels=dim, out_channels=160, kernel_size=1, stride=1)
         self.conv_surface = nn.Conv1d(in_channels=dim, out_channels=64, kernel_size=1, stride=1)

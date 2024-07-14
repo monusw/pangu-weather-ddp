@@ -6,12 +6,21 @@ import torch.utils.checkpoint as checkpoint
 from model.layers import *
 from era5_data.config import cfg
 
+def checkpoint_wrapper(use_ckpt, func, *args):
+    if use_ckpt:
+        return checkpoint.checkpoint(func, *args, use_reentrant=True)
+    else:
+        return func(*args)
+
 class PanguModel(nn.Module):
     def __init__(self, depths = [2,6,6,2], num_heads = [6, 12, 12, 6], dims = [192, 384, 384, 192], patch_size = (2, 4, 4), device=None):
         super(PanguModel, self).__init__()
 
         # Patch embedding
         self.device = device
+
+        # Whether to use pytorch checkpoint to save GPU/CPU memory
+        self.use_checkpoint = self.training
 
         self._input_layer = PatchEmbedding(patch_size, dims[0], device=self.device,
                                            const_mask_path=cfg.PG_CONST_MASK_PATH)
@@ -29,15 +38,15 @@ class PanguModel(nn.Module):
                 dim = dims[i_layer],
                 drop_path_ratio_list = dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                 heads = num_heads[i_layer],
-                use_checkpoint = self.training,
                 device = self.device)
         self.layers = nn.Sequential(layer_list)
 
         self.upsample = UpSample(dims[-2], dims[-1])
 
         # Patch Recovery
+        # Note: use PatchRecovery_pretrain if use Apple mps for testing, because mps not support ConvTranspose3d
         self._output_layer = PatchRecovery(patch_size, dims[-2])
-        # self._output_layer = PatchRecovery_pretrain(dims[-2])
+        # self._output_layer = PatchRecovery_pretrain(patch_size, dims[-2])
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -58,8 +67,7 @@ class PanguModel(nn.Module):
 
         # Encoder, composed of two layers
         # Layer 1, shape (8, 360, 181, C), C = 192 as in the original paper
-
-        x = self.layers[0](x, 8, 181, 360)
+        checkpoint_wrapper(self.use_checkpoint, self.layers[0], x, 8, 181, 360)
 
         # Store the tensor for skip-connection
         skip = x
@@ -67,17 +75,18 @@ class PanguModel(nn.Module):
         # Downsample from (8, 360, 181) to (8, 180, 91)
         x = self.downsample(x, 8, 181, 360)
 
-        x = self.layers[1](x, 8, 91, 180)
+        # Layer 2
+        checkpoint_wrapper(self.use_checkpoint, self.layers[1], x, 8, 91, 180)
         # Decoder, composed of two layers
         # Layer 3, shape (8, 180, 91, 2C), C = 192 as in the original paper
-        x = self.layers[2](x, 8, 91, 180)
+        checkpoint_wrapper(self.use_checkpoint, self.layers[2], x, 8, 91, 180)
 
         # Upsample from (8, 180, 91) to (8, 360, 181)
         x = self.upsample(x)
 
         # Layer 4, shape (8, 360, 181, 2C), C = 192 as in the original paper
-        x = self.layers[3](x, 8, 181, 360) #([1, 521280, 192])
-
+        checkpoint_wrapper(self.use_checkpoint, self.layers[3], x, 8, 181, 360)
+        #([1, 521280, 192])
 
         # Skip connect, in last dimension(C from 192 to 384)
         x = torch.cat((skip, x), dim=-1)
